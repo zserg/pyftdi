@@ -250,15 +250,22 @@ class JtagController:
         if not (0 < length < 8):
             raise JtagError('Invalid TMS length')
         out = BitSequence(tms, length=8)
-        # apply the last TDO bit
-        if self._last is not None:
-            out[7] = self._last
         # print("TMS", tms, (self._last is not None) and 'w/ Last' or '')
-        # reset last bit
-        self._last = None
-        cmd = array('B', (Ftdi.WRITE_BITS_TMS_NVE, length-1, out.tobyte()))
-        self._stack_cmd(cmd)
-        self.sync()
+
+        # use RW to get the last TDI bit
+        if self._last is not None:
+            # apply the last TDO bit
+            out[7] = self._last
+            self._last = None
+            cmd = array('B', (Ftdi.RW_BITS_TMS_PVE_NVE, length-1, out.tobyte()))
+            self._stack_cmd(cmd)
+            self.sync()
+            data = self._ftdi.read_data_bytes(1, 4)
+            return data[0] >> 7
+        else:
+            cmd = array('B', (Ftdi.WRITE_BITS_TMS_NVE, length-1, out.tobyte()))
+            self._stack_cmd(cmd)
+            self.sync()
 
     def read(self, length):
         """Read out a sequence of bits from TDO"""
@@ -321,9 +328,14 @@ class JtagController:
             # print("push %d bits" % bit_count)
         self.sync()
         bs = BitSequence()
-        byte_count = length//8
-        pos = 8*byte_count
-        bit_count = length-pos
+
+        # Comment the following lines because FTDI doesn't return more bits 
+        # than there was written in the previous step
+        #
+        # byte_count = length//8
+        # pos = 8*byte_count
+        # bit_count = length-pos
+        
         if byte_count:
             data = self._ftdi.read_data_bytes(byte_count, 4)
             if not data:
@@ -342,8 +354,8 @@ class JtagController:
             bitseq = BitSequence(byte, length=bit_count)
             bs.append(bitseq)
             # print("pop %d bits" % bit_count)
-        if len(bs) != length:
-            raise ValueError("Internal error")
+        # if len(bs) != length:
+        #     raise ValueError("Internal error")
         return bs
 
     def _stack_cmd(self, cmd):
@@ -459,9 +471,10 @@ class JtagEngine:
         # convert the path into an event sequence
         events = self._sm.get_events(path)
         # update the remote device tap controller
-        self._ctrl.write_tms(events)
+        last_bit = self._ctrl.write_tms(events)
         # update the current state machine's state
         self._sm.handle_events(events)
+        return last_bit
 
     def go_idle(self):
         """Change the current TAP controller to the IDLE state"""
